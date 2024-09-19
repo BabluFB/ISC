@@ -13,7 +13,7 @@ class Solution:
         self.cost = float('inf')
         self.is_redundant = False
         self.repetitions = 0
-
+        self.len = len(position)
     def evaluate(self, eval_function, n=10):
         self.cost = eval_function(self.position, n)
         self.repetitions += 1
@@ -143,7 +143,7 @@ class ISC(StochasticOptimizer):
             sol_val_new = {}
             sol_space = []
             unique_set = set()
-            print('gas: ',self.gas)
+            #print('gas: ',self.gas)
             for _ in range(m):
                 #print(_,m)
                 #print('loop')
@@ -216,7 +216,17 @@ class ISC(StochasticOptimizer):
                 break
             
             sol_vals_dict = sol_val_new
-        
+        print("\nClusters formed after evolution:")
+        for i, (center, solutions) in enumerate(clusters.items()):
+            print(f"Cluster {i + 1}:")
+            print(f"  Center: {list(center)}")
+            print(f"  Number of solutions: {len(solutions)}")
+            if solutions:
+                best_solution = min(solutions, key=lambda x: sol_vals_dict[tuple(x)])
+                print(f"  Best solution: {best_solution}")
+                print(f"  Best solution cost: {sol_vals_dict[tuple(best_solution)]}")
+            print()
+
         return clusters
     def select_random_pair_in_range(self,dictionary: Dict[Tuple[int], int], lower_bound: int  , upper_bound: int ):
         eligible_pairs = [(key, value) for key, value in dictionary.items() 
@@ -299,15 +309,25 @@ class ISC(StochasticOptimizer):
 
         outputs = []
         compass = COMPASS(self.eval_function, self.bounds, self.dimension)
-        
+        print("\nBest solutions after COMPASS optimization:")
         for i, cluster in enumerate(final_clusters):
             if fitness_vals[i] < 0.05:
                 print('Skipping cluster due to low fitness value')
                 continue
             compass_budget = self.compass_budget * fitness_vals[i]
+            best_solution, best_cost = compass.simulate(cluster, compass_budget)
             outputs.append(compass.simulate(cluster, compass_budget))
+            print(f"Cluster {i+1}:")
+            print(f"  Best solution: {best_solution}")
+            print(f"  Best cost: {best_cost}")
+            print()
+        overall_best = min(outputs, key=lambda x: x[1])
+        print("\nOverall best solution:")
+        print(f"  Solution: {overall_best[0]}")
+        print(f"  Cost: {overall_best[1]}")
 
-        return min(outputs, key=lambda x: x[1])
+
+        return overall_best
 
     @staticmethod
     def fitness_function(values):
@@ -341,8 +361,8 @@ class COMPASS(StochasticOptimizer):
             
             pop.solutions = V_k
             pop.update_best()
-            
-            redundant_vars =[1 for _ in range(len(pop.solutions)-1)] 
+            #print('best: ',pop.best_solution)
+            redundant_vars =self.check_redundancy(pop.best_solution,V_k)#[1 for _ in range(len(pop.solutions)-1)] 
             pop.solutions = [pop.best_solution] + [sol for sol, red in zip(pop.solutions[1:], redundant_vars) if red]
             
             k += 1
@@ -416,6 +436,51 @@ class COMPASS(StochasticOptimizer):
                 redundancy_status.append(False)
         
         return redundancy_status
+    def check_redundancy(self,x_star_k : List[int], V_k:List[List[int]]):
+        from gurobipy import GRB
+        import gurobipy as gp
+        n = x_star_k.len
+        x_star_k = np.array(x_star_k.position)
+        redundancy_status = []
+        for x_i in V_k:
+            x_i = np.array(x_i.position)
+            model = gp.Model()
+            model.setParam('OutputFlag', 0)
+            #print('x_star: ',x_star_k)
+            x = model.addMVar(shape=n, vtype=GRB.CONTINUOUS, name="x")
+            #print('asdasd',x_star_k,x_i)
+
+            midpoint_i = (x_star_k + x_i) / 2
+            diff = x_star_k - x_i
+
+            # Correct way to create the objective function
+            objective = gp.LinExpr()
+            for j in range(n):
+                #print('j:,',j,diff)
+                objective += diff[j] * (x[j] - midpoint_i[j])
+            model.setObjective(objective, GRB.MINIMIZE)
+
+            for x_j in V_k:
+                if not np.array_equal(np.array(x_j), x_i):
+
+                    x_j = np.array(x_j.position)
+                    midpoint_j = (x_star_k + x_j) / 2
+                    # Correct way to create the constraint
+                    constraint = gp.LinExpr()
+                    for j in range(n):
+                        #print('j: ',j)
+                        constraint += (x_star_k[j] - x_j[j]) * (x[j] - midpoint_j[j])
+                    model.addConstr(constraint >= 0)
+
+            model.optimize()
+
+            if model.status == GRB.OPTIMAL:
+                obj_value = model.ObjVal
+                redundancy_status.append(obj_value >= 0)
+            else:
+                redundancy_status.append(False)
+
+        return redundancy_status
 
     @staticmethod
     def SAR(k: int) -> int:
@@ -440,14 +505,15 @@ def stochastic_cost_function(x: List[int], n: int = 10) -> float:
     # Implementation of your stochastic cost function
     return np.mean([stochastic_cost_function_helper(x) for _ in range(n)])
 
-bounds = (0, 100)
+bounds = (-100, 100)
 dimension = 4
-total_budget = 3e4
-alpha = 0.6
+total_budget = 6e5
+alpha = 0.7
 no_of_clusters = 2
-
 isc = ISC(stochastic_cost_function, bounds, dimension, total_budget, alpha, no_of_clusters)
+time_curr = time.time()
 best_solution, best_cost = isc.run()
+print(f'Time taken for ISC: {time.time()-time_curr}')
 
-print(f"Best solution: {best_solution}")
-print(f"Best cost: {best_cost}")
+#print(f"Best solution: {best_solution}")
+#print(f"Best cost: {best_cost}")

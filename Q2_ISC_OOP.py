@@ -14,8 +14,12 @@ class Solution:
         self.is_redundant = False
         self.repetitions = 0
         self.len = len(position)
-    def evaluate(self, eval_function, n=10):
-        self.cost = eval_function(self.position, n)
+        self.random_state = None
+
+    def evaluate(self, eval_function, n=10, random_state = 1234):
+        if random_state is not None:
+            self.random_state = random_state
+        self.cost = eval_function(self.position, n, self.random_state)
         self.repetitions += 1
 
     def __lt__(self, other):
@@ -65,10 +69,14 @@ class ISC(StochasticOptimizer):
         self.no_of_clusters = no_of_clusters
         self.GA_budget = total_budget * alpha
         self.compass_budget = total_budget * (1 - alpha)
+        self.global_random_state = np.random.randint(0, 2**32 - 1)
+
     def SAR(self,k: int) -> int:
         n0 = 8
         return math.ceil(n0 * (np.log(k)**2))
+
     def initialize(self, mg: int) -> Tuple[Dict, int, float, Dict, Dict]:
+        np.random.seed(self.global_random_state)
         unique_set = {}
         while len(unique_set) < mg:
             temp_lower_bound = int((self.bounds[0]*3/4) + (self.bounds[1]*1/4))
@@ -76,9 +84,9 @@ class ISC(StochasticOptimizer):
             genome = self.create_solution().position
             genome_tuple = tuple(genome)
             if genome_tuple in unique_set:
-                unique_set[genome_tuple] = min(unique_set[genome_tuple], self.eval_function(genome))
+                unique_set[genome_tuple] = min(unique_set[genome_tuple], self.eval_function(genome, random_state=np.random.randint(0, 2**32 - 1)))
             else:
-                unique_set[genome_tuple] = self.eval_function(genome)
+                unique_set[genome_tuple] = self.eval_function(genome, random_state=np.random.randint(0, 2**32 - 1))
         
         sorted_items = sorted(unique_set.items(), key=lambda x: x[1])
         niche_centers = sorted_items[:self.no_of_clusters]
@@ -103,7 +111,7 @@ class ISC(StochasticOptimizer):
         r = min(self.euclidean_distance(center, best_center) for center in centers[1:]) / 2
         
         sol_vals_dict = {tuple(sol): unique_set[tuple(sol)] for center in clusters for sol in clusters[tuple(center)]}
-        center_vals = {tuple(center): self.eval_function(center) for center in centers}
+        center_vals = {tuple(center): self.eval_function(center, random_state=np.random.randint(0, 2**32 - 1)) for center in centers}
         
         return clusters, q, r, sol_vals_dict, center_vals
 
@@ -120,7 +128,8 @@ class ISC(StochasticOptimizer):
                 max_distance = distance
                 farthest_point = point
         return farthest_point, max_distance
-    def closeset_centre(self,centers:List[List[int]],visited_solution:List[int]) -> List[int]:#Finds the closests centre to the point
+
+    def closeset_centre(self,centers:List[List[int]],visited_solution:List[int]) -> List[int]:
         closest = [float('inf') for _ in centers]
         min_dist= float('inf')
         for center in centers:
@@ -128,14 +137,14 @@ class ISC(StochasticOptimizer):
             if dist < min_dist:
                 min_dist = dist
                 closest = center
-            #print('hehe: ',closest)
         return closest
+
     def evolution(self, clusters, sol_vals_dict, center_vals_dict):
+        np.random.seed(self.global_random_state)
         centers = [list(center) for center in center_vals_dict.keys()]
         center_vals = list(center_vals_dict.values())
         k =2
         while True:
-            # Sort solutions
             sorted_items = sorted(sol_vals_dict.items(), key=lambda x: x[1])
             other_genomes = [list(genome[0]) for genome in sorted_items]
             
@@ -143,20 +152,14 @@ class ISC(StochasticOptimizer):
             sol_val_new = {}
             sol_space = []
             unique_set = set()
-            #print('gas: ',self.gas)
             for _ in range(m):
-                #print(_,m)
-                #print('loop')
-                # Perform crossover and mutation
                 i = np.random.randint(0, m)
                 parent1 = other_genomes[i]
                 parent2 = self.get_mate(parent1, sol_vals_dict)
                 child1, child2 = self.single_point_crossover(parent1, parent2)
-                #print('crossover_done')
-                # Evaluate new solutions
-                cost_1 = self.eval_function(child1)
+                cost_1 = self.eval_function(child1, random_state=np.random.randint(0, 2**32 - 1))
                 self.gas += self.SAR(k)
-                cost_2 = self.eval_function(child2)
+                cost_2 = self.eval_function(child2, random_state=np.random.randint(0, 2**32 - 1))
                 self.gas += self.SAR(k)
                 add_1_to_sol = True
                 add_2_to_sol = True
@@ -177,40 +180,24 @@ class ISC(StochasticOptimizer):
                 if add_2_to_sol:
                     sol_val_new[tuple(child2)] = cost_2
                     sol_space.append(child2)
-                # Update centers and solution space
-                # ... (implement the logic to update centers and solution space)
             centers1 = [tuple(center) for center in centers]
-            #print('center list:',centers1)
             clusters ={center:[] for center in centers1}
             for sol in sol_space:
-                #print('fwew',type(sol[0]))
-                #print('sol: ',sol)
                 clusters[tuple(self.closeset_centre(centers1,sol))].append(sol)
             best_center =  centers1[0]
             sol_space = clusters[best_center]
-            #print('Cluster: ',clusters)
-            #print(centers)
             farthest_point , min_radius = self.find_farthest_point(best_center,centers[1:])
-            # Update clusters
-            # ... (implement the logic to update clusters)
             for center in centers[1:]:
-            #print('eheh: ',center)
                 if self.euclidean_distance(center,best_center) < 0.5*min_radius:
-                    #print('center: ',best_center)
-
-#                    clusters[tuple(best_center)].append(center)
                     if tuple(center) in clusters:
                         if len(clusters[tuple(center)]) >0:
                             if tuple(center) in clusters:
                                 clusters[tuple(best_center)].append(clusters.pop(tuple(center))[0])
-        #print('Clusters: ',clusters)
             k+=1
             sol_vals_dict = sol_val_new
             if len(centers) == 1:
                 print("Only one center is present")
-                #print('no of centers: ',len(clusters))
                 break
-            # Check termination conditions
             if self.gas > self.GA_budget:
                 print('GA Budget over')
                 break
@@ -228,33 +215,26 @@ class ISC(StochasticOptimizer):
             print()
 
         return clusters
+
     def select_random_pair_in_range(self,dictionary: Dict[Tuple[int], int], lower_bound: int  , upper_bound: int ):
         eligible_pairs = [(key, value) for key, value in dictionary.items() 
                           if lower_bound <= value <= upper_bound]
-        #for key,value in dictionary.items():
-            #print(value)
-   #     print('e[ :',eligible_pairs)
         if not eligible_pairs:
-            return None  # No pairs found within the specified range
+            return None
 
         return eligible_pairs[np.random.choice(len(eligible_pairs))][0]
 
     def get_mate(self, genome, sol_val_dict):
-        temp_dict = sol_val_dict.copy()  # Create a copy of the original dictionary
-        cost_value = temp_dict[tuple(genome)]  # Get the cost value for the genom       
-        del temp_dict[tuple(genome)]  # Remove the genome from the dictionar        
+        temp_dict = sol_val_dict.copy()
+        cost_value = temp_dict[tuple(genome)]
+        del temp_dict[tuple(genome)]
         beta = 0.1
-        #print('sol_val: ',len(sol_val_dict))
         mate = self.select_random_pair_in_range(temp_dict, (1 - beta) * cost_value, (1 + beta) * cost_value)
-        #print('mate: ',mate)
         counter= 0 
         while not mate or list(mate) == genome:
             if counter > 10:
                 mate = genome
                 break
-            #print('alppha: ',alpha)
-            #print('12312')
-            #Increasing visible space for finding mate
             beta += 0.1
             mate = self.select_random_pair_in_range(temp_dict, (1 - beta) * cost_value, (1 + beta) * cost_value)
             counter +=1
@@ -265,10 +245,8 @@ class ISC(StochasticOptimizer):
             size = len(parent1)
             parent1 = tuple(parent1)
             parent2 = tuple(parent2)
-            # Choose a random crossover point (excluding the first and last positions)
             crossover_point = np.random.randint(1, size)
 
-            # Create the first child
             child1 = list(parent1[:crossover_point] + tuple([-1] * (size - crossover_point)))
             pointer1 = crossover_point
             for gene in parent2[crossover_point:] + parent2[:crossover_point]:
@@ -278,7 +256,6 @@ class ISC(StochasticOptimizer):
                     if pointer1 == size:
                         pointer1 = 0
 
-            # Create the second child
             child2 = list(parent2[:crossover_point] + tuple([-1] * (size - crossover_point)))
             pointer2 = crossover_point
             for gene in parent1[crossover_point:] + parent1[:crossover_point]:
@@ -303,7 +280,7 @@ class ISC(StochasticOptimizer):
             local_cluster = local_cluster[:2]
             local_cluster.append(centers[i])
             final_clusters.append(local_cluster)
-            cost_vals.append(self.eval_function(centers[i]))
+            cost_vals.append(self.eval_function(centers[i], random_state=np.random.randint(0, 2**32 - 1)))
 
         fitness_vals = self.fitness_function(cost_vals)
 
@@ -340,12 +317,14 @@ class COMPASS(StochasticOptimizer):
         super().__init__(eval_function, bounds, dimension)
         self.step_size = 10
         self.step_size_param = 10
+        self.global_random_state = np.random.randint(0, 2**32 - 1)
 
     def simulate(self, population: List[List[int]], budget: float) -> Tuple[List[int], float]:
+        np.random.seed(self.global_random_state)
         pop = Population()
         for sol in population:
             solution = Solution(sol)
-            solution.evaluate(self.eval_function)
+            solution.evaluate(self.eval_function, random_state=np.random.randint(0, 2**32 - 1))
             pop.add(solution)
         
         self.gas = 0
@@ -356,13 +335,12 @@ class COMPASS(StochasticOptimizer):
             V_k = [pop.best_solution] + random.sample(mp_area, min(40, len(mp_area)))
             
             for sol in V_k:
-                sol.evaluate(self.eval_function)
+                sol.evaluate(self.eval_function, random_state=np.random.randint(0, 2**32 - 1))
                 self.gas += self.SAR(k)
             
             pop.solutions = V_k
             pop.update_best()
-            #print('best: ',pop.best_solution)
-            redundant_vars =self.check_redundancy(pop.best_solution,V_k)#[1 for _ in range(len(pop.solutions)-1)] 
+            redundant_vars =self.check_redundancy(pop.best_solution,V_k)
             pop.solutions = [pop.best_solution] + [sol for sol, red in zip(pop.solutions[1:], redundant_vars) if red]
             
             k += 1
@@ -446,17 +424,13 @@ class COMPASS(StochasticOptimizer):
             x_i = np.array(x_i.position)
             model = gp.Model()
             model.setParam('OutputFlag', 0)
-            #print('x_star: ',x_star_k)
             x = model.addMVar(shape=n, vtype=GRB.CONTINUOUS, name="x")
-            #print('asdasd',x_star_k,x_i)
 
             midpoint_i = (x_star_k + x_i) / 2
             diff = x_star_k - x_i
 
-            # Correct way to create the objective function
             objective = gp.LinExpr()
             for j in range(n):
-                #print('j:,',j,diff)
                 objective += diff[j] * (x[j] - midpoint_i[j])
             model.setObjective(objective, GRB.MINIMIZE)
 
@@ -465,10 +439,8 @@ class COMPASS(StochasticOptimizer):
 
                     x_j = np.array(x_j.position)
                     midpoint_j = (x_star_k + x_j) / 2
-                    # Correct way to create the constraint
                     constraint = gp.LinExpr()
                     for j in range(n):
-                        #print('j: ',j)
                         constraint += (x_star_k[j] - x_j[j]) * (x[j] - midpoint_j[j])
                     model.addConstr(constraint >= 0)
 
@@ -486,24 +458,27 @@ class COMPASS(StochasticOptimizer):
     def SAR(k: int) -> int:
         n0 = 8
         return math.ceil(n0 * (np.log(k)**2))
-def stochastic_cost_function_helper(x:list[int]): #here x holds [x1,x2,x3,.....]
+
+def stochastic_cost_function_helper(x:list[int], random_state = 1234):
     x = np.array(x)
     
-    # Extract individual elements
     x1, x2, x3, x4 = x
     
-    # Compute the deterministic part of the expression
     result = (x1 + 10 * x2)**2 + 5 * (x3 - x4)**2 + (x2 - 2 * x3)**4 + 10 * (x1 - x4)**4 + 1
     
+    if random_state is not None:
+        np.random.seed(random_state)
     noise = np.random.normal(0, np.sqrt(result))
     
     result_with_noise = result + noise
     
     return result_with_noise
-# Usage
-def stochastic_cost_function(x: List[int], n: int = 10) -> float:
-    # Implementation of your stochastic cost function
-    return np.mean([stochastic_cost_function_helper(x) for _ in range(n)])
+
+def stochastic_cost_function(x: List[int], n: int = 10, random_state = 1234) -> float:
+    if random_state is not None:
+        np.random.seed(random_state)
+    random_states = np.random.randint(0, 2**32 - 1, n)
+    return np.mean([stochastic_cost_function_helper(x, rs) for rs in random_states])
 
 bounds = (-100, 100)
 dimension = 4
@@ -514,6 +489,3 @@ isc = ISC(stochastic_cost_function, bounds, dimension, total_budget, alpha, no_o
 time_curr = time.time()
 best_solution, best_cost = isc.run()
 print(f'Time taken for ISC: {time.time()-time_curr}')
-
-#print(f"Best solution: {best_solution}")
-#print(f"Best cost: {best_cost}")

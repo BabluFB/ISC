@@ -6,6 +6,7 @@ import time
 import osqp
 from scipy import sparse
 import math
+from mrg32k3a.mrg32k3a import MRG32k3a
 
 class Solution:
     def __init__(self, position: List[int]):
@@ -47,15 +48,17 @@ class StochasticOptimizer:
         self.bounds = bounds
         self.dimension = dimension
         self.gas = 0
+        self.rng = MRG32k3a(s_ss_sss_index=[0, 0, 0])  # Main stream for create_solution and get_neighbors
 
     def create_solution(self) -> Solution:
-        position = [random.randint(self.bounds[0], self.bounds[1]) for _ in range(self.dimension)]
+        position = [self.rng.randint(self.bounds[0], self.bounds[1]) for _ in range(self.dimension)]
         return Solution(position)
 
     def get_neighbors(self, solution: Solution, n: int, step_size: float) -> List[Solution]:
         neighbors = []
         for _ in range(n):
-            reach = np.floor(step_size * np.random.randn(self.dimension))
+            # Fix: Call normalvariate for each dimension separately
+            reach = np.floor([step_size * self.rng.normalvariate(0, 1) for _ in range(self.dimension)])
             new_position = np.clip(np.array(solution.position) + reach, self.bounds[0], self.bounds[1])
             new_position = np.round(new_position).astype(int)
             neighbors.append(Solution(list(new_position)))
@@ -70,13 +73,14 @@ class ISC(StochasticOptimizer):
         self.GA_budget = total_budget * alpha
         self.compass_budget = total_budget * (1 - alpha)
         self.global_random_state = np.random.randint(0, 2**32 - 1)
+        self.eval_rng = MRG32k3a(s_ss_sss_index=[1, 0, 0])  # Separate stream for evaluation
+        self.evolution_rng = MRG32k3a(s_ss_sss_index=[2, 0, 0])  # Stream for evolution
 
     def SAR(self,k: int) -> int:
         n0 = 8
         return math.ceil(n0 * (np.log(k)**2))
 
     def initialize(self, mg: int) -> Tuple[Dict, int, float, Dict, Dict]:
-        np.random.seed(self.global_random_state)
         unique_set = {}
         while len(unique_set) < mg:
             temp_lower_bound = int((self.bounds[0]*3/4) + (self.bounds[1]*1/4))
@@ -84,9 +88,9 @@ class ISC(StochasticOptimizer):
             genome = self.create_solution().position
             genome_tuple = tuple(genome)
             if genome_tuple in unique_set:
-                unique_set[genome_tuple] = min(unique_set[genome_tuple], self.eval_function(genome, random_state=np.random.randint(0, 2**32 - 1)))
+                unique_set[genome_tuple] = min(unique_set[genome_tuple], self.eval_function(genome, random_state=self.eval_rng))
             else:
-                unique_set[genome_tuple] = self.eval_function(genome, random_state=np.random.randint(0, 2**32 - 1))
+                unique_set[genome_tuple] = self.eval_function(genome, random_state=self.eval_rng)
         
         sorted_items = sorted(unique_set.items(), key=lambda x: x[1])
         niche_centers = sorted_items[:self.no_of_clusters]
@@ -111,7 +115,7 @@ class ISC(StochasticOptimizer):
         r = min(self.euclidean_distance(center, best_center) for center in centers[1:]) / 2
         
         sol_vals_dict = {tuple(sol): unique_set[tuple(sol)] for center in clusters for sol in clusters[tuple(center)]}
-        center_vals = {tuple(center): self.eval_function(center, random_state=np.random.randint(0, 2**32 - 1)) for center in centers}
+        center_vals = {tuple(center): self.eval_function(center, random_state=self.eval_rng) for center in centers}
         
         return clusters, q, r, sol_vals_dict, center_vals
 
@@ -140,7 +144,6 @@ class ISC(StochasticOptimizer):
         return closest
 
     def evolution(self, clusters, sol_vals_dict, center_vals_dict):
-        np.random.seed(self.global_random_state)
         centers = [list(center) for center in center_vals_dict.keys()]
         center_vals = list(center_vals_dict.values())
         k =2
@@ -153,13 +156,13 @@ class ISC(StochasticOptimizer):
             sol_space = []
             unique_set = set()
             for _ in range(m):
-                i = np.random.randint(0, m)
+                i = self.evolution_rng.randint(0, m-1)
                 parent1 = other_genomes[i]
                 parent2 = self.get_mate(parent1, sol_vals_dict)
                 child1, child2 = self.single_point_crossover(parent1, parent2)
-                cost_1 = self.eval_function(child1, random_state=np.random.randint(0, 2**32 - 1))
+                cost_1 = self.eval_function(child1, random_state=self.eval_rng)
                 self.gas += self.SAR(k)
-                cost_2 = self.eval_function(child2, random_state=np.random.randint(0, 2**32 - 1))
+                cost_2 = self.eval_function(child2, random_state=self.eval_rng)
                 self.gas += self.SAR(k)
                 add_1_to_sol = True
                 add_2_to_sol = True
@@ -222,7 +225,7 @@ class ISC(StochasticOptimizer):
         if not eligible_pairs:
             return None
 
-        return eligible_pairs[np.random.choice(len(eligible_pairs))][0]
+        return eligible_pairs[self.evolution_rng.randint(0, len(eligible_pairs)-1)][0]
 
     def get_mate(self, genome, sol_val_dict):
         temp_dict = sol_val_dict.copy()
@@ -245,7 +248,7 @@ class ISC(StochasticOptimizer):
             size = len(parent1)
             parent1 = tuple(parent1)
             parent2 = tuple(parent2)
-            crossover_point = np.random.randint(1, size)
+            crossover_point = self.evolution_rng.randint(1, size-1)
 
             child1 = list(parent1[:crossover_point] + tuple([-1] * (size - crossover_point)))
             pointer1 = crossover_point
@@ -280,7 +283,7 @@ class ISC(StochasticOptimizer):
             local_cluster = local_cluster[:2]
             local_cluster.append(centers[i])
             final_clusters.append(local_cluster)
-            cost_vals.append(self.eval_function(centers[i], random_state=np.random.randint(0, 2**32 - 1)))
+            cost_vals.append(self.eval_function(centers[i], random_state=self.eval_rng))
 
         fitness_vals = self.fitness_function(cost_vals)
 
@@ -318,13 +321,14 @@ class COMPASS(StochasticOptimizer):
         self.step_size = 10
         self.step_size_param = 10
         self.global_random_state = np.random.randint(0, 2**32 - 1)
+        self.compass_rng = MRG32k3a(s_ss_sss_index=[3, 0, 0])  # Stream for COMPASS-specific operations
+        self.eval_rng = MRG32k3a(s_ss_sss_index=[4, 0, 0])  # Stream for evaluation
 
     def simulate(self, population: List[List[int]], budget: float) -> Tuple[List[int], float]:
-        np.random.seed(self.global_random_state)
         pop = Population()
         for sol in population:
             solution = Solution(sol)
-            solution.evaluate(self.eval_function, random_state=np.random.randint(0, 2**32 - 1))
+            solution.evaluate(self.eval_function, random_state=self.eval_rng)
             pop.add(solution)
         
         self.gas = 0
@@ -335,7 +339,7 @@ class COMPASS(StochasticOptimizer):
             V_k = [pop.best_solution] + random.sample(mp_area, min(40, len(mp_area)))
             
             for sol in V_k:
-                sol.evaluate(self.eval_function, random_state=np.random.randint(0, 2**32 - 1))
+                sol.evaluate(self.eval_function, random_state=self.eval_rng)
                 self.gas += self.SAR(k)
             
             pop.solutions = V_k
@@ -459,26 +463,25 @@ class COMPASS(StochasticOptimizer):
         n0 = 8
         return math.ceil(n0 * (np.log(k)**2))
 
-def stochastic_cost_function_helper(x:list[int], random_state = 1234):
-    x = np.array(x)
+def stochastic_cost_function(x: List[int], n: int = 10, random_state = None) -> float:
+    if isinstance(random_state, MRG32k3a):
+        rng = random_state
+    else:
+        rng = MRG32k3a(s_ss_sss_index=[4, 0, 0])  # Default stream for cost function
     
-    x1, x2, x3, x4 = x
+    result = np.mean([stochastic_cost_function_helper(x, rng) for _ in range(n)])
     
-    result = (x1 + 10 * x2)**2 + 5 * (x3 - x4)**2 + (x2 - 2 * x3)**4 + 10 * (x1 - x4)**4 + 1
+    # Increment the substream
+    rng.advance_subsubstream()
     
-    if random_state is not None:
-        np.random.seed(random_state)
-    noise = np.random.normal(0, np.sqrt(result))
-    
-    result_with_noise = result + noise
-    
-    return result_with_noise
+    return result
 
-def stochastic_cost_function(x: List[int], n: int = 10, random_state = 1234) -> float:
-    if random_state is not None:
-        np.random.seed(random_state)
-    random_states = np.random.randint(0, 2**32 - 1, n)
-    return np.mean([stochastic_cost_function_helper(x, rs) for rs in random_states])
+def stochastic_cost_function_helper(x: list[int], rng: MRG32k3a):
+    x = np.array(x)
+    x1, x2, x3, x4 = x
+    result = (x1 + 10 * x2)**2 + 5 * (x3 - x4)**2 + (x2 - 2 * x3)**4 + 10 * (x1 - x4)**4 + 1
+    noise = rng.normalvariate(0, np.sqrt(result))
+    return result + noise
 
 bounds = (-100, 100)
 dimension = 4
